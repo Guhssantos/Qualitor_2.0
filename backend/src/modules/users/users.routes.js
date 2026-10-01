@@ -14,7 +14,7 @@ const router = Router();
 
 const userInclude = {
   role: { select: { id: true, key: true, name: true } },
-  teams: { select: { isSupervisor: true, team: { select: { id: true, name: true } } } },
+  teams: { select: { isSupervisor: true, team: { select: { id: true, name: true, categories: { select: { category: { select: { id: true, name: true } } } } } } } },
   categories: { select: { category: { select: { id: true, name: true } } } },
   permissions: { select: { grant: true, permission: { select: { id: true, key: true, name: true } } } },
 };
@@ -23,8 +23,13 @@ function serialize(u) {
   const { passwordHash, ...rest } = u;
   return {
     ...rest,
-    teams: u.teams?.map((t) => ({ ...t.team, isSupervisor: t.isSupervisor })),
+    teams: u.teams?.map((t) => ({ id: t.team.id, name: t.team.name, isSupervisor: t.isSupervisor })),
     categories: u.categories?.map((c) => c.category),
+    // Categorias efetivas = diretas + herdadas das equipes.
+    effectiveCategories: [...new Map([
+      ...(u.categories || []).map((c) => [c.category.id, c.category]),
+      ...(u.teams || []).flatMap((t) => t.team.categories?.map((tc) => [tc.category.id, tc.category]) || []),
+    ]).values()].sort((a, b) => a.name.localeCompare(b.name)),
     permissionOverrides: u.permissions?.map((p) => ({ ...p.permission, grant: p.grant })),
     permissions: undefined,
   };

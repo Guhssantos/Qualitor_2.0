@@ -1,0 +1,17 @@
+# Banco PostgreSQL para desenvolvimento/homologação.
+# Uso: docker compose up -d db
+# Depois ajuste backend/prisma/schema.prisma (provider = "postgresql") e DATABASE_URL.
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: qualitor
+      POSTGRES_USER: ${POSTGRES_USER:-qualitor}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Defina POSTGRES_PASSWORD}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+volumes:
+  pgdata:
