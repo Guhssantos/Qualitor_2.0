@@ -1,0 +1,352 @@
+// Qualitor 2.0 — Service Desk
+// Banco padrão: SQLite (desenvolvimento). Para PostgreSQL / SQL Server / Azure SQL,
+// altere o "provider" abaixo e a variável DATABASE_URL (veja docs/DATABASE.md).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Identidade e controle de acesso
+// ---------------------------------------------------------------------------
+
+model Role {
+  id          String           @id @default(uuid())
+  key         String           @unique // ADMIN | SUPERVISOR | AGENT | REQUESTER | <custom>
+  name        String
+  description String?
+  isSystem    Boolean          @default(false)
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+  users       User[]
+  permissions RolePermission[]
+}
+
+model Permission {
+  id          String           @id @default(uuid())
+  key         String           @unique // ex.: tickets.create
+  name        String
+  description String?
+  module      String
+  roles       RolePermission[]
+  users       UserPermission[]
+}
+
+model RolePermission {
+  roleId       String
+  permissionId String
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+}
+
+// Exceções por usuário: grant=true concede, grant=false revoga uma permissão do perfil.
+model UserPermission {
+  userId       String
+  permissionId String
+  grant        Boolean    @default(true)
+  user         User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([userId, permissionId])
+}
+
+model User {
+  id                 String           @id @default(uuid())
+  name               String
+  email              String           @unique
+  login              String           @unique
+  passwordHash       String
+  department         String?
+  jobTitle           String?
+  phone              String?
+  active             Boolean          @default(true)
+  mustChangePassword Boolean          @default(false)
+  lastLoginAt        DateTime?
+  roleId             String
+  role               Role             @relation(fields: [roleId], references: [id])
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+
+  permissions        UserPermission[]
+  categories         UserCategory[]
+  teams              TeamMember[]
+  sessions           Session[]
+  requestedTickets   Ticket[]         @relation("TicketRequester")
+  assignedTickets    Ticket[]         @relation("TicketAssignee")
+  messages           TicketMessage[]
+  attachments        TicketAttachment[]
+  history            TicketHistory[]
+  notifications      Notification[]
+  auditLogs          AuditLog[]
+  ledTeams           Team[]           @relation("TeamLeader")
+}
+
+// Sessões (refresh tokens) — permite revogar acesso e controlar sessão.
+model Session {
+  id         String    @id @default(uuid())
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash  String    @unique
+  ip         String?
+  userAgent  String?
+  expiresAt  DateTime
+  revokedAt  DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([userId])
+}
+
+// ---------------------------------------------------------------------------
+// Equipes e categorias
+// ---------------------------------------------------------------------------
+
+model Team {
+  id          String         @id @default(uuid())
+  name        String         @unique
+  description String?
+  email       String?
+  active      Boolean        @default(true)
+  leaderId    String?
+  leader      User?          @relation("TeamLeader", fields: [leaderId], references: [id], onDelete: SetNull)
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+  members     TeamMember[]
+  categories  TeamCategory[]
+  ownedCategories Category[] @relation("CategoryTeam")
+  tickets     Ticket[]
+}
+
+model TeamMember {
+  teamId       String
+  userId       String
+  isSupervisor Boolean @default(false)
+  team         Team    @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  user         User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([teamId, userId])
+}
+
+// Categorias que a equipe atende (todos os membros herdam).
+model TeamCategory {
+  teamId     String
+  categoryId String
+  team       Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  category   Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  @@id([teamId, categoryId])
+}
+
+model Category {
+  id              String         @id @default(uuid())
+  name            String         @unique
+  description     String?
+  icon            String?
+  active          Boolean        @default(true)
+  defaultPriority String         @default("MEDIUM")
+  teamId          String?
+  team            Team?          @relation("CategoryTeam", fields: [teamId], references: [id], onDelete: SetNull)
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+  subcategories   Subcategory[]
+  users           UserCategory[]
+  teams           TeamCategory[]
+  slaPolicies     SlaPolicy[]
+  tickets         Ticket[]
+}
+
+// Atendentes autorizados diretamente na categoria.
+model UserCategory {
+  userId     String
+  categoryId String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  category   Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  @@id([userId, categoryId])
+}
+
+model Subcategory {
+  id          String   @id @default(uuid())
+  categoryId  String
+  category    Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  name        String
+  description String?
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  tickets     Ticket[]
+
+  @@unique([categoryId, name])
+}
+
+// ---------------------------------------------------------------------------
+// SLA
+// ---------------------------------------------------------------------------
+
+// categoryId nulo = política global para a prioridade.
+model SlaPolicy {
+  id                   String    @id @default(uuid())
+  categoryId           String?
+  category             Category? @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  priority             String
+  firstResponseMinutes Int
+  resolutionMinutes    Int
+  businessDaysOnly     Boolean   @default(false)
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  @@unique([categoryId, priority])
+}
+
+// ---------------------------------------------------------------------------
+// Chamados
+// ---------------------------------------------------------------------------
+
+model Ticket {
+  id                 String    @id @default(uuid())
+  number             Int       @unique
+  title              String
+  description        String
+  status             String    @default("OPEN")
+  priority           String    @default("MEDIUM")
+  source             String    @default("PORTAL") // PORTAL | API | AI | EMAIL | TEAMS | WHATSAPP | TELEGRAM
+  location           String?
+  department         String?
+  categoryId         String
+  category           Category     @relation(fields: [categoryId], references: [id])
+  subcategoryId      String?
+  subcategory        Subcategory? @relation(fields: [subcategoryId], references: [id], onDelete: SetNull)
+  requesterId        String
+  requester          User         @relation("TicketRequester", fields: [requesterId], references: [id])
+  assigneeId         String?
+  assignee           User?        @relation("TicketAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+  teamId             String?
+  team               Team?        @relation(fields: [teamId], references: [id], onDelete: SetNull)
+
+  firstResponseDueAt DateTime?
+  resolutionDueAt    DateTime?
+  firstRespondedAt   DateTime?
+  slaPausedAt        DateTime?
+  slaWarningSentAt   DateTime?
+  resolvedAt         DateTime?
+  closedAt           DateTime?
+  cancelledAt        DateTime?
+
+  rating             Int?
+  ratingComment      String?
+  aiMetadata         String?   // JSON com o resultado da triagem por IA (futuro)
+
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  messages           TicketMessage[]
+  attachments        TicketAttachment[]
+  history            TicketHistory[]
+  notifications      Notification[]
+
+  @@index([status])
+  @@index([categoryId])
+  @@index([requesterId])
+  @@index([assigneeId])
+}
+
+model TicketMessage {
+  id          String   @id @default(uuid())
+  ticketId    String
+  ticket      Ticket   @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  authorId    String?
+  author      User?    @relation(fields: [authorId], references: [id], onDelete: SetNull)
+  type        String   @default("PUBLIC") // PUBLIC | INTERNAL | SYSTEM
+  body        String
+  createdAt   DateTime @default(now())
+  attachments TicketAttachment[]
+
+  @@index([ticketId])
+}
+
+model TicketAttachment {
+  id           String         @id @default(uuid())
+  ticketId     String
+  ticket       Ticket         @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  messageId    String?
+  message      TicketMessage? @relation(fields: [messageId], references: [id], onDelete: SetNull)
+  uploaderId   String?
+  uploader     User?          @relation(fields: [uploaderId], references: [id], onDelete: SetNull)
+  originalName String
+  storedName   String
+  mimeType     String
+  size         Int
+  internal     Boolean        @default(false)
+  createdAt    DateTime       @default(now())
+
+  @@index([ticketId])
+}
+
+model TicketHistory {
+  id        String   @id @default(uuid())
+  ticketId  String
+  ticket    Ticket   @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  action    String   // CREATED | STATUS | PRIORITY | ASSIGNEE | TEAM | CATEGORY | ...
+  field     String?
+  fromValue String?
+  toValue   String?
+  note      String?
+  internal  Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([ticketId])
+}
+
+model Counter {
+  key   String @id
+  value Int    @default(0)
+}
+
+// ---------------------------------------------------------------------------
+// Notificações, auditoria e configurações
+// ---------------------------------------------------------------------------
+
+model Notification {
+  id        String    @id @default(uuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  ticketId  String?
+  ticket    Ticket?   @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  type      String
+  title     String
+  message   String
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId, readAt])
+}
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  action    String
+  entity    String?
+  entityId  String?
+  details   String?  // JSON
+  ip        String?
+  userAgent String?
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([action])
+}
+
+model Setting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+}
